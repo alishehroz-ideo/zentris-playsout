@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en-us">
+  <head>
+    <meta charset="utf-8">
+    <meta http-equiv="Content-Type" content="text/html; charset=utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, shrink-to-fit=yes">
+    <title>Zentris</title>
+    <link rel="icon" type="image/png" href="TemplateData/game-icon.png">
+    <link rel="stylesheet" href="TemplateData/style.css">
+    <style>
+      /* ===== Ideofuzion template — responsive letterbox + loading UI =====
+         All overrides live inline here because Unity regenerates TemplateData/style.css
+         on every build; !important beats it. Zentris is portrait, authored for phones (UI width-matched at 1000 units). The canvas FILLS the viewport on any phone shape from 0.42 to 9:16 and
+         letterboxes only outside that (see resizeCanvas). */
+
+      html, body {
+        margin: 0; padding: 0; width: 100%; height: 100%;
+        overflow: hidden; background: #0e0e12;
+        touch-action: none;                 /* don't let the browser eat drags/clicks */
+        -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+      }
+
+      /* Full-viewport shell. The game's own key art, blurred and darkened, sits behind the
+         loading icon and progress bar so a player can tell what is loading.
+
+         The blur is BAKED INTO THE JPG (Tools/bake_action_bg.py -> Tools/bake_loading_bg.py),
+         never done here with filter: blur() — a full-screen filter is expensive on phones and
+         this screen renders precisely while the device is busy downloading the wasm.
+
+         `cover`, never `100% 100%`: cover crops, stretch distorts, and portrait art pulled
+         across a wide letterboxed viewport looks broken.
+
+         #0e0e12 stays underneath as the fallback while the JPG is in flight, and it is what
+         paints the letterbox bars. It must match GROUND in bake_loading_bg.py.
+
+         THE IMAGE IS TAKEN BACK OFF once Unity renders — search for
+         `container.style.background` in the createUnityInstance().then() handler below. That
+         teardown is half of this feature, not an extra: because this element paints the
+         letterbox bars, leaving the image set keeps it on screen for the whole session (trap 14 /
+         BP-1). The two halves are forty lines and one language apart, so each names the other.
+
+         THE IMAGE IS TAKEN BACK OFF once Unity renders — search for
+         `container.style.background` in the createUnityInstance().then() handler below. That
+         teardown is half of this feature, not an extra: because this element paints the
+         letterbox bars, leaving the image set keeps it on screen for the whole session. The
+         two halves are forty lines and one language apart, so each names the other. */
+      #unity-container {
+        position: fixed; inset: 0;
+        background: #0e0e12 url('TemplateData/loading-bg.jpg') center / cover no-repeat;
+      }
+
+      /* Canvas is positioned by JS (letterbox). Transparent so the backdrop shows through
+         while loading; Unity fills it once the game renders. */
+      #unity-canvas {
+        display: block; position: absolute;
+        background: transparent !important;
+      }
+
+      /* ---- Loading bar ---- */
+      #unity-loading-bar {
+        position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%);
+        display: none; z-index: 10; text-align: center;
+      }
+      /* The icon box starts EMPTY and only paints the baked-in icon if the tenant lookup fails
+         (JS adds .gb-fallback), so we never flash a placeholder we are about to replace. */
+      #unity-logo {
+        position: relative;
+        width: 180px; height: 180px; margin: 0 auto 12px;
+        background: none;
+      }
+      #unity-logo.gb-fallback {
+        background: url('TemplateData/game-icon.png') center / contain no-repeat;
+      }
+
+      /* Tenant logo, layered ON TOP of the static icon. Starts hidden and is only revealed
+         after the image has fully decoded, so a broken/slow URL never blanks the icon. */
+      #gb-tenant-logo {
+        position: absolute; inset: 0;
+        background-position: center; background-repeat: no-repeat; background-size: contain;
+        opacity: 0; transition: opacity .25s ease;
+      }
+      #gb-tenant-logo.gb-ready { opacity: 1; }
+
+      /* Spinner centred INSIDE the 180px icon box, kept small enough not to spill past it and
+         collide with the progress bar underneath. Lighter than the bar's fill (#1C3A5B) so it
+         reads as a separate element against the dark backdrop. */
+      #gb-spinner {
+        position: absolute; left: 50%; top: 50%;
+        width: 44px; height: 44px; margin: -22px 0 0 -22px;
+        border: 4px solid rgba(255,255,255,0.18);
+        border-top-color: #7FA8D4;
+        border-radius: 50%;
+        animation: gb-spin 0.8s linear infinite;
+      }
+      @keyframes gb-spin { to { transform: rotate(360deg); } }
+      @media (prefers-reduced-motion: reduce) {
+        #gb-spinner { animation-duration: 3s; }
+      }
+      #unity-progress-bar-empty {                 /* track */
+        width: 300px; height: 18px; margin: 12px auto 0;
+        background: #d9d9d9 !important; background-image: none !important;
+        border-radius: 9px; overflow: hidden;
+      }
+      #unity-progress-bar-full {                  /* fill */
+        width: 0%; height: 100%;
+        background: #1C3A5B !important; background-image: none !important;
+        margin-top: 0 !important;                 /* fix: default style.css pushes it down */
+        border-radius: 9px; transition: width 0.1s ease;
+      }
+      #unity-progress-percent {                   /* % readout */
+        color: #F2F2F2; font: 14px arial, sans-serif; margin-top: 6px;
+      }
+
+      /* No footer in this build. */
+      #unity-footer { display: none !important; }
+      #unity-warning {
+        position: absolute; left: 50%; top: 5%; transform: translate(-50%);
+        background: white; padding: 10px; display: none; z-index: 20;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="unity-container">
+      <canvas id="unity-canvas" width=621 height=1344 tabindex="-1"></canvas>
+      <div id="unity-loading-bar">
+        <div id="unity-logo">
+          <div id="gb-tenant-logo"></div>
+          <div id="gb-spinner"></div>
+        </div>
+        <div id="unity-progress-bar-empty"><div id="unity-progress-bar-full"></div></div>
+        <div id="unity-progress-percent">0%</div>
+      </div>
+      <div id="unity-warning"> </div>
+    </div>
+    <script>
+      // ===== Loading-screen icon (Playsout pilot) =====
+      // The GameBull build looks up a tenant icon from the GameBull API here. The pilot has no GameBull
+      // session and calls nothing: it shows the built-in game icon straight away.
+      (function showBuiltinIcon() {
+        var iconBox = document.querySelector("#unity-logo");
+        var spinner = document.querySelector("#gb-spinner");
+        if (iconBox) iconBox.classList.add("gb-fallback");
+        if (spinner && spinner.parentNode) spinner.parentNode.removeChild(spinner);
+      })();
+
+      var canvas = document.querySelector("#unity-canvas");
+
+      // ===== Fill the viewport; letterbox only beyond the shapes the game supports =====
+      // Zentris is a portrait phone game: its camera scales to screen height and its UI
+      // canvases match width, so any phone shape between 0.42 and 9:16 lays out as designed.
+      //   wider than 9:16 (desktop, tablets): letterbox to 9:16, as the other GameBull games do
+      //   narrower than 0.42: letterbox, before the HUD reaches the screen edges
+      var MAX_ASPECT = 9 / 16, MIN_ASPECT = 0.42;
+      function resizeCanvas() {
+        var availW = window.innerWidth, availH = window.innerHeight, a = availW / availH, w, h;
+        if (a > MAX_ASPECT)      { h = availH; w = Math.round(h * MAX_ASPECT); }
+        else if (a < MIN_ASPECT) { w = availW; h = Math.round(w / MIN_ASPECT); }
+        else                     { w = availW; h = availH; }
+        canvas.style.width  = w + "px";
+        canvas.style.height = h + "px";
+        canvas.style.left   = Math.round((availW - w) / 2) + "px";
+        canvas.style.top    = Math.round((availH - h) / 2) + "px";
+      }
+      window.addEventListener("resize", resizeCanvas);
+      resizeCanvas();
+
+      // ===== Single source of truth for the loading bar + percent =====
+      function setLoadProgress(p) {
+        var pct  = Math.round(p * 100);
+        var full = document.querySelector("#unity-progress-bar-full");
+        var txt  = document.querySelector("#unity-progress-percent");
+        if (full) full.style.width = pct + "%";
+        if (txt)  txt.innerText    = pct + "%";
+      }
+
+      function unityShowBanner(msg, type) {
+        var warningBanner = document.querySelector("#unity-warning");
+        function updateBannerVisibility() {
+          warningBanner.style.display = warningBanner.children.length ? 'block' : 'none';
+        }
+        var div = document.createElement('div');
+        div.innerHTML = msg;
+        warningBanner.appendChild(div);
+        if (type == 'error') div.style = 'background: red; padding: 10px;';
+        else {
+          if (type == 'warning') div.style = 'background: yellow; padding: 10px;';
+          setTimeout(function () { warningBanner.removeChild(div); updateBannerVisibility(); }, 5000);
+        }
+        updateBannerVisibility();
+      }
+
+      var buildUrl = "Build";
+      var loaderUrl = buildUrl + "/playsoutPilot.loader.js";
+      var config = {
+        arguments: [],
+        dataUrl: buildUrl + "/playsoutPilot.data.unityweb",
+        frameworkUrl: buildUrl + "/playsoutPilot.framework.js.unityweb",
+        codeUrl: buildUrl + "/playsoutPilot.wasm.unityweb",
+        streamingAssetsUrl: "StreamingAssets",
+        companyName: "Plugin Digital",
+        productName: "Zentris",
+        productVersion: "1.0.1",
+        showBanner: unityShowBanner,
+        // Render buffer tracks the CSS (letterboxed) canvas size -> responsive, no distortion.
+        matchWebGLToCanvasSize: true,
+      };
+
+      document.querySelector("#unity-loading-bar").style.display = "block";
+
+      var script = document.createElement("script");
+      script.src = loaderUrl;
+      script.onload = () => {
+        createUnityInstance(canvas, config, setLoadProgress).then((unityInstance) => {
+          window.unityInstance = unityInstance;
+
+          // Force 100% before hiding (Unity's onProgress plateaus at 0.9).
+          setLoadProgress(1);
+
+          // Safari/WebKit keeps painting loading elements even after display:none on a parent.
+          // Hide each explicitly, clear its background image, then REMOVE it from the DOM.
+          function killEl(sel) {
+            var el = document.querySelector(sel);
+            if (!el) return;
+            el.style.display = "none";
+            el.style.visibility = "hidden";
+            el.style.opacity = "0";
+            el.style.backgroundImage = "none";
+            if (el.parentNode) el.parentNode.removeChild(el);
+          }
+          killEl("#gb-spinner");        // tenant-icon additions must be torn down too,
+          killEl("#gb-tenant-logo");    // or Safari keeps painting them over the game
+          killEl("#unity-logo");
+          killEl("#unity-progress-bar-full");
+          killEl("#unity-progress-bar-empty");
+          killEl("#unity-progress-percent");
+          killEl("#unity-loading-bar");
+
+          // The backdrop is a LOADING backdrop, and it has to come down with the rest of the
+          // loading UI. #unity-container is the FULL VIEWPORT while the canvas is letterboxed
+          // inside it, so the rule that sets the image (search: "#unity-container" in the
+          // <style> block above) is also what paints the LETTERBOX BARS. Leave it set and a
+          // band of blurred key art sits above and below the game for the whole session, with
+          // a visible seam at the canvas edge — which does not read as a loading leftover, it
+          // reads as the game rendering wrong.
+          //
+          // #0e0e12 must stay identical to the fallback colour in that CSS rule.
+          var container = document.querySelector("#unity-container");
+          if (container) container.style.background = "#0e0e12";
+
+          resizeCanvas();
+        }).catch((message) => {
+          // An alert() can be blocked inside the host iframe; show the error on the page instead.
+          unityShowBanner(String(message), "error");
+        });
+      };
+      script.onerror = function () { unityShowBanner("The game files could not be loaded. Please reload the page.", "error"); };
+      document.body.appendChild(script);
+    </script>
+  </body>
+</html>
